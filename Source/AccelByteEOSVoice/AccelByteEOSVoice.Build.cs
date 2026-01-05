@@ -1,4 +1,8 @@
-﻿using UnrealBuildTool;
+// Copyright (c) 2026 AccelByte Inc. All Rights Reserved.
+// This is licensed software from AccelByte Inc, for limitations
+// and restrictions contact your company contract manager.
+
+using UnrealBuildTool;
 
 public class AccelByteEOSVoice : ModuleRules
 {
@@ -10,9 +14,12 @@ public class AccelByteEOSVoice : ModuleRules
             new string[]
             {
                 "Core",
+                "EOSSDK",
+                "EOSShared",
                 "OnlineSubsystemAccelByte",
                 "OnlineSubsystem",
                 "AccelByteUe4Sdk",
+                "AccelByteUe4SdkCustomization",
                 "OnlineSubsystemEOS",
                 "VoiceChat",
                 "EOSVoiceChat",

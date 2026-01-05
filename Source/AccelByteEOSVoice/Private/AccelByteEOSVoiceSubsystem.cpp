@@ -1,372 +1,529 @@
-﻿// Fill out your copyright notice in the Description page of Project Settings.
-
+// Copyright (c) 2026 AccelByte Inc. All Rights Reserved.
+// This is licensed software from AccelByte Inc, for limitations
+// and restrictions contact your company contract manager.
 
 #include "AccelByteEOSVoiceSubsystem.h"
-
 #include "AccelByteEOSVoice.h"
-#include "EOSVoiceChatTypes.h"
-#include "IOnlineSubsystemEOS.h"
 #include "OnlineSubsystemUtils.h"
 #include "OnlineSubsystemAccelByteDefines.h"
-#include "Interfaces/OnlineSessionInterface.h"
-#include "VoiceChat.h"
+#include "OnlineIdentityInterfaceAccelByte.h"
+#include "OnlineSessionSettings.h"
+#include "EOSVoiceChatTypes.h"
+#include "TimerManager.h"
+#include "IEOSSDKManager.h"
+#include "eos_rtc.h"
 
-#if UE_BUILD_DEVELOPMENT
-static FAutoConsoleCommandWithWorldAndArgs GSetTransmitChannel(
-	TEXT("AB.EOSVoice.TransmitTo"),  TEXT("Set transmision to channel party-session or game-session"),
-	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
-	{
-		if(Args.Num() > 0)
-		{
-			World->GetGameInstance()->GetSubsystem<UAccelByteEOSVoiceSubsystem>()->TransmitToSpecificChannel(0, Args[0]);
-		}
-	})
-);
-
-static FAutoConsoleCommandWithWorldAndArgs GSetMute(
-	TEXT("AB.EOSVoice.SetMute"),  TEXT("Set true to muted"),
-	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
-	{
-		if(Args.Num() > 0)
-		{
-			bool Muted = FCString::ToBool(*Args[0]);
-			World->GetGameInstance()->GetSubsystem<UAccelByteEOSVoiceSubsystem>()->SetAudioInputDeviceMuted(0, Muted);
-		}
-	})
-);
-
-static FAutoConsoleCommandWithWorldAndArgs GSetDeafen(
-	TEXT("AB.EOSVoice.SetDeafen"),  TEXT("Set true to deafen"),
-	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
-	{
-		if(Args.Num() > 0)
-		{
-			bool Muted = FCString::ToBool(*Args[0]);
-			World->GetGameInstance()->GetSubsystem<UAccelByteEOSVoiceSubsystem>()->SetAudioOutputDeviceMuted(0, Muted);
-		}
-	})
-);
-
-static FAutoConsoleCommandWithWorld GListPlayers(
-	TEXT("AB.EOSVoice.ListPlayers"), TEXT("List players registered in voice chat"),
-	FConsoleCommandWithWorldDelegate::CreateLambda([](UWorld* World)
-	{
-		IVoiceChatUser* VoiceChat = World->GetGameInstance()->GetSubsystem<UAccelByteEOSVoiceSubsystem>()->GetVoiceChatUser(0);
-		if(VoiceChat)
-		{
-			TArray<FString> Channels = VoiceChat->GetChannels();
-			for(const FString& Channel : Channels)
-			{
-				ACCELBYTE_EOS_VOICE_LOG(Log, TEXT("Channel: %s"), *Channel);
-				for(const FString& Player : VoiceChat->GetPlayersInChannel(Channel))
-				{
-					ACCELBYTE_EOS_VOICE_LOG(Log, TEXT("Player: %s"), *Player);
-				}
-				ACCELBYTE_EOS_VOICE_LOG(Log, TEXT("==========================================="));
-			}
-		}
-	})
-);
-#endif
+#define EOS_VOICE_TOPIC TEXT("EOS_VOICE")
 
 void UAccelByteEOSVoiceSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
-	Super::Initialize(Collection);
+    Super::Initialize(Collection);
 
-	IOnlineSubsystem* Subsystem = Online::GetSubsystem(GetWorld(), ACCELBYTE_SUBSYSTEM);
-	check(Subsystem)
+    FOnlineSubsystemAccelByte* AccelByteSubsystem = static_cast<FOnlineSubsystemAccelByte*>(Online::GetSubsystem(GetWorld(), ACCELBYTE_SUBSYSTEM));
+    check(AccelByteSubsystem);
 
-	IdentityAccelByte = StaticCastSharedPtr<FOnlineIdentityAccelByte>(Subsystem->GetIdentityInterface());
-	check(IdentityAccelByte)
+    IdentityAccelByte = StaticCastSharedPtr<FOnlineIdentityAccelByte>(AccelByteSubsystem->GetIdentityInterface());
+    check(IdentityAccelByte);
 
-	IOnlineSessionPtr SessionAccelByte = Subsystem->GetSessionInterface();
-	check(SessionAccelByte)
+    SessionAccelByte = StaticCastSharedPtr<FOnlineSessionV2AccelByte>(AccelByteSubsystem->GetSessionInterface());
+    check(SessionAccelByte);
 
-	IOnlineSubsystemEOS* EOSSubsystem = static_cast<IOnlineSubsystemEOS*>(Online::GetSubsystem(GetWorld(), EOS_SUBSYSTEM));
-	check(EOSSubsystem)
+    EOSSubsystem = static_cast<IOnlineSubsystemEOS*>(Online::GetSubsystem(GetWorld(), EOS_SUBSYSTEM));
+    check(EOSSubsystem);
 
-	IdentityEOS = EOSSubsystem->GetIdentityInterface();
-	check(IdentityEOS)
+    IEOSPlatformHandlePtr PlatformHandle = EOSSubsystem->GetEOSPlatformHandle();
+    EOSRtcHandle = EOS_Platform_GetRTCInterface(*PlatformHandle);
 
-	IdentityAccelByte->AddOnLoginCompleteDelegate_Handle(0, FOnLoginCompleteDelegate::CreateUObject(this, &ThisClass::OnAccelByteLoginCompleted));
-	SessionAccelByte->AddOnDestroySessionCompleteDelegate_Handle(FOnDestroySessionCompleteDelegate::CreateUObject(this, &ThisClass::OnSessionDestroyed));
-	IdentityEOS->AddOnLoginCompleteDelegate_Handle(0, FOnLoginCompleteDelegate::CreateUObject(this, &ThisClass::OnEpicLoginCompleted));
+    IdentityEOS = EOSSubsystem->GetIdentityInterface();
+    check(IdentityEOS);
+
+    if (!IsRunningDedicatedServer())
+    {
+        IdentityAccelByte->AddOnLoginCompleteDelegate_Handle(0, FOnLoginCompleteDelegate::CreateUObject(this, &UAccelByteEOSVoiceSubsystem::OnAccelByteLoginCompleted));
+        SessionAccelByte->AddOnCreateSessionCompleteDelegate_Handle(FOnCreateSessionCompleteDelegate::CreateUObject(this, &UAccelByteEOSVoiceSubsystem::OnAccelByteCreateSessionCompleted));
+        SessionAccelByte->AddOnJoinSessionCompleteDelegate_Handle(FOnJoinSessionCompleteDelegate::CreateUObject(this, &UAccelByteEOSVoiceSubsystem::OnAccelByteJoinSessionCompleted));
+        SessionAccelByte->AddOnDestroySessionCompleteDelegate_Handle(FOnDestroySessionCompleteDelegate::CreateUObject(this, &UAccelByteEOSVoiceSubsystem::OnAccelByteDestroySessionCompleted));
+
+        IdentityEOS->AddOnLoginCompleteDelegate_Handle(0, FOnLoginCompleteDelegate::CreateUObject(this, &UAccelByteEOSVoiceSubsystem::OnEOSLoginCompleted));
+    }
+    else
+    {
+        ServerEOSVoiceApi = AccelByteSubsystem->GetAccelByteInstance().Pin()->GetServerApiClient()->GetServerApiPtr<AccelByte::GameServerApi::EOSVoice>();
+        SessionAccelByte->AddOnServerReceivedSessionDelegate_Handle(FOnServerReceivedSessionDelegate::CreateUObject(this,  &UAccelByteEOSVoiceSubsystem::OnServerReceivedSession));
+    }
 }
 
 void UAccelByteEOSVoiceSubsystem::Deinitialize()
 {
-	Super::Deinitialize();
+    bIsShuttingDown = true;
 
-	IdentityEOS->Logout(0);
+    if (VoiceChatUser != nullptr) 
+    {
+        const TArray<FString> Channels = VoiceChatUser->GetChannels();
+        for (const FString& ChannelName : Channels)
+        {
+            ACCELBYTE_EOS_VOICE_LOG(Log, TEXT("Leave channel %s"), *ChannelName);
+            VoiceChatUser->LeaveChannel(ChannelName, {});
+        }
+        VoiceChatUser = nullptr;
+    }
+
+    Super::Deinitialize();
 }
 
-IVoiceChatUser* UAccelByteEOSVoiceSubsystem::GetVoiceChatUser(int32 LocalUserNum) const
+void UAccelByteEOSVoiceSubsystem::SetPlayerMuted(const FString& PlayerName, bool bIsMuted)
 {
-	if (const FAccelByteVoiceLocalUser* VoiceUser = FindVoiceLocalUser(LocalUserNum))
-	{
-		return VoiceUser->VoiceChatUser;
-	}
-
-	return nullptr;
+    VoiceChatUser->SetPlayerMuted(PlayerName, bIsMuted);
 }
 
-bool UAccelByteEOSVoiceSubsystem::JoinChannel(int32 LocalUserNum, const FString& ChannelName, const FString& ChannelCredentials, EVoiceChatChannelType ChannelType, const FOnVoiceChatChannelJoinCompleteDelegate& Delegate)
+void UAccelByteEOSVoiceSubsystem::SetAudioInputDeviceMuted(bool bIsMuted)
 {
-	if (IVoiceChatUser* VoiceUser = GetVoiceChatUser(LocalUserNum))
-	{
-		VoiceUser->JoinChannel(ChannelName, ChannelCredentials, ChannelType, Delegate);
-		return true;
-	}
-
-	ACCELBYTE_EOS_VOICE_LOG(Warning, TEXT("Unable to join channel %s. Voice user not ready for LocalUserNum %d."), *ChannelName, LocalUserNum);
-	return false;
+    VoiceChatUser->SetAudioInputDeviceMuted(bIsMuted);
 }
 
-bool UAccelByteEOSVoiceSubsystem::LeaveChannel(int32 LocalUserNum, const FString& ChannelName, const FOnVoiceChatChannelLeaveCompleteDelegate& Delegate)
+void UAccelByteEOSVoiceSubsystem::SetAudioOutputDeviceMuted(bool bIsMuted)
 {
-	if (IVoiceChatUser* VoiceUser = GetVoiceChatUser(LocalUserNum))
-	{
-		VoiceUser->LeaveChannel(ChannelName, Delegate);
-		return true;
-	}
-
-	ACCELBYTE_EOS_VOICE_LOG(Verbose, TEXT("Unable to leave channel %s. Voice user not ready for LocalUserNum %d."), *ChannelName, LocalUserNum);
-	return false;
+    VoiceChatUser->SetAudioOutputDeviceMuted(bIsMuted);
 }
 
-bool UAccelByteEOSVoiceSubsystem::SetPlayerMuted(int32 LocalUserNum, const FString& PlayerName, bool bIsMuted)
+void UAccelByteEOSVoiceSubsystem::TransmitToSpecificChannel(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType ChannelType)
 {
-	if (IVoiceChatUser* VoiceUser = GetVoiceChatUser(LocalUserNum))
-	{
-		VoiceUser->SetPlayerMuted(PlayerName, bIsMuted);
-		return true;
-	}
-
-	ACCELBYTE_EOS_VOICE_LOG(Warning, TEXT("Unable to update mute state for player %s. Voice user not ready for LocalUserNum %d."), *PlayerName, LocalUserNum);
-	return false;
+    FString ChannelName = ToChannelName(ChannelType);
+    if (ChannelName.IsEmpty())
+    {
+        VoiceChatUser->TransmitToNoChannels();
+    }
+    else
+    {
+        VoiceChatUser->TransmitToSpecificChannels({ ChannelName });
+    }
 }
 
-bool UAccelByteEOSVoiceSubsystem::SetAudioInputDeviceMuted(int32 LocalUserNum, bool bIsMuted)
+void UAccelByteEOSVoiceSubsystem::HandlePartyVoiceDisconnection(const EOS_RTC_DisconnectedCallbackInfo& Data)
 {
-	if (IVoiceChatUser* VoiceUser = GetVoiceChatUser(LocalUserNum))
-	{
-		VoiceUser->SetAudioInputDeviceMuted(bIsMuted);
-		return true;
-	}
+    // make sure retryable
+    bool bShouldReconnect = Data.ResultCode == EOS_EResult::EOS_NoConnection ||
+        Data.ResultCode == EOS_EResult::EOS_ServiceFailure ||
+        Data.ResultCode == EOS_EResult::EOS_UnexpectedError;
+    if (!bShouldReconnect)
+    {
+        ACCELBYTE_EOS_VOICE_LOG(Error, TEXT("Voice Chat disconnected, no need to reconnect"));
+        return;
+    }
 
-	ACCELBYTE_EOS_VOICE_LOG(Warning, TEXT("Unable to change input mute. Voice user not ready for LocalUserNum %d."), LocalUserNum);
-	return false;
+    FString RoomName = StringCast<TCHAR>(Data.RoomName).Get();
+    FString ExpectedRoomName = ToChannelName(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::PARTY);
+    if (RoomName.Equals(ExpectedRoomName))
+    {
+        ACCELBYTE_EOS_VOICE_LOG(Error, TEXT("Failed to reconnect! RoomName check failed! %s != %s"), *RoomName, *ExpectedRoomName);
+        return;
+    }
+
+    // TODO: Add proper retry, this only one shot retry.
+    RequestVoiceToken(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::PARTY);
 }
 
-bool UAccelByteEOSVoiceSubsystem::SetAudioOutputDeviceMuted(int32 LocalUserNum, bool bIsMuted)
+void UAccelByteEOSVoiceSubsystem::HandleTeamVoiceDisconnection(const EOS_RTC_DisconnectedCallbackInfo& Data)
 {
-	if (IVoiceChatUser* VoiceUser = GetVoiceChatUser(LocalUserNum))
-	{
-		VoiceUser->SetAudioOutputDeviceMuted(bIsMuted);
-		return true;
-	}
+    // make sure retryable
+    bool bShouldReconnect = Data.ResultCode == EOS_EResult::EOS_NoConnection ||
+        Data.ResultCode == EOS_EResult::EOS_ServiceFailure ||
+        Data.ResultCode == EOS_EResult::EOS_UnexpectedError;
+    if (!bShouldReconnect)
+    {
+        ACCELBYTE_EOS_VOICE_LOG(Error, TEXT("Voice Chat disconnected, no need to reconnect"));
+        return;
+    }
 
-	ACCELBYTE_EOS_VOICE_LOG(Warning, TEXT("Unable to change output mute. Voice user not ready for LocalUserNum %d."), LocalUserNum);
-	return false;
+    FString RoomName = StringCast<TCHAR>(Data.RoomName).Get();
+    FString ExpectedRoomName = ToChannelName(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::TEAM);
+    if (RoomName.Equals(ExpectedRoomName))
+    {
+        ACCELBYTE_EOS_VOICE_LOG(Error, TEXT("Failed to reconnect! RoomName check failed! %s != %s"), *RoomName, *ExpectedRoomName);
+        return;
+    }
+    RequestVoiceToken(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::TEAM);
 }
 
-bool UAccelByteEOSVoiceSubsystem::TransmitToSpecificChannel(int32 LocalUserNum, const FString& ChannelName)
+void UAccelByteEOSVoiceSubsystem::HandleSessionVoiceDisconnection(const EOS_RTC_DisconnectedCallbackInfo& Data)
 {
-	if (IVoiceChatUser* VoiceUser = GetVoiceChatUser(LocalUserNum))
-	{
-#if (ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 5)
-		VoiceUser->TransmitToSpecificChannels({ChannelName});
-		return true;
-#else
-		VoiceUser->TransmitToSpecificChannel(ChannelName);
-		return true;
-#endif
-	}
-	ACCELBYTE_EOS_VOICE_LOG(Warning, TEXT("Unable to transmit to channel %s. Voice user not ready for LocalUserNum %d."), *ChannelName, LocalUserNum);
-	return false;
+    // make sure retryable
+    bool bShouldReconnect = Data.ResultCode == EOS_EResult::EOS_NoConnection ||
+        Data.ResultCode == EOS_EResult::EOS_ServiceFailure ||
+        Data.ResultCode == EOS_EResult::EOS_UnexpectedError;
+    if (!bShouldReconnect)
+    {
+        ACCELBYTE_EOS_VOICE_LOG(Error, TEXT("Voice Chat disconnected, no need to reconnect"));
+        return;
+    }
+
+    FString RoomName = StringCast<TCHAR>(Data.RoomName).Get();
+    FString ExpectedRoomName = ToChannelName(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::SESSION);
+    if (RoomName.Equals(ExpectedRoomName))
+    {
+        ACCELBYTE_EOS_VOICE_LOG(Error, TEXT("Failed to reconnect! RoomName check failed! %s != %s"), *RoomName, *ExpectedRoomName);
+        return;
+    }
+    RequestVoiceToken(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::SESSION);
 }
 
 void UAccelByteEOSVoiceSubsystem::LoginToEpic(int32 LocalUserNum)
 {
-	ACCELBYTE_EOS_VOICE_LOG(Log, TEXT("Start login to EOS voice for LocalUserNum %d"), LocalUserNum);
-	IOnlineSubsystemEOS* EOSSubsystem = static_cast<IOnlineSubsystemEOS*>(Online::GetSubsystem(GetWorld(), EOS_SUBSYSTEM));
-	if (EOSSubsystem == nullptr)
-	{
-		ACCELBYTE_EOS_VOICE_LOG(Warning, TEXT("EOS subsystem is not available, cannot login voice user %d."), LocalUserNum);
-		return;
-	}
+    ACCELBYTE_EOS_VOICE_LOG(Log, TEXT("Start login to EOS for LocalUserNum %d"), LocalUserNum);
 
-	FOnlineAccountCredentials EpicCreds;
-	EpicCreds.Type = TEXT("AccelByte:OpenIdAccessToken");
-	EpicCreds.Token = IdentityAccelByte->GetAuthToken(LocalUserNum);
+    FOnlineAccountCredentials EpicCreds;
+    EpicCreds.Type = TEXT("AccelByte:OpenIdAccessToken");
+    EpicCreds.Token = IdentityAccelByte->GetAuthToken(LocalUserNum);
 
-	EOSSubsystem->GetIdentityInterface()->Login(LocalUserNum, EpicCreds);
+    IdentityEOS->Login(LocalUserNum, EpicCreds);
 }
 
-void UAccelByteEOSVoiceSubsystem::OnAccelByteLoginCompleted(int LocalUserNum, bool bSuccessful, const FUniqueNetId& UniqueNetId, const FString& Error)
+FString UAccelByteEOSVoiceSubsystem::ToChannelName(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType ChannelName)
 {
-	if (!bSuccessful)
-	{
-		ACCELBYTE_EOS_VOICE_LOG(Warning, TEXT("AccelByte login failed for LocalUserNum %d: %s"), LocalUserNum, *Error);
-		return;
-	}
-
-	check(Online::GetSubsystem(GetWorld(), ACCELBYTE_SUBSYSTEM));
-
-	FAccelByteVoiceLocalUser& VoiceUser = LocalVoiceUsers.FindOrAdd(LocalUserNum);
-	VoiceUser.ApiClient = IdentityAccelByte->GetApiClient(LocalUserNum);
-	if (!VoiceUser.ApiClient.IsValid())
-	{
-		ACCELBYTE_EOS_VOICE_LOG(Error, TEXT("API client is invalid for LocalUserNum %d"), LocalUserNum);
-		return;
-	}
-
-	// Register lobby freeform notif
-	VoiceUser.LobbyMessageDelegateHandle = VoiceUser.ApiClient->GetLobbyApi().Pin()->AddMessageNotifDelegate(AccelByte::Api::Lobby::FMessageNotif::CreateUObject(this, &ThisClass::OnVoiceTokenReceived, LocalUserNum));
-
-	VoiceUser.ApiClient->GetUserApi().Pin()->GetData(THandler<FAccountUserData>::CreateUObject(this, &ThisClass::OnGetUserData, LocalUserNum),
-		FErrorHandler::CreateWeakLambda(this, [LocalUserNum](int32 ErrCode, const FString& ErrMsg)
-		{
-			ACCELBYTE_EOS_VOICE_LOG(Error, TEXT("Unable to gather user data for LocalUserNum %d! [%d] %s"), LocalUserNum, ErrCode, *ErrMsg);
-		})
-	);
+    switch(ChannelName)
+    {
+    case EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::TEAM:
+        return FString(TEXT("TEAM"));
+    case EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::PARTY:
+        return FString(TEXT("PARTY"));
+    case EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::SESSION:
+        return FString(TEXT("SESSION"));
+    default:
+        return FString(TEXT("INVALID"));
+    }
 }
 
-void UAccelByteEOSVoiceSubsystem::OnEpicLoginCompleted(int LocalUserNum, bool bWasSuccessful, const FUniqueNetId& UniqueNetId, const FString& Error)
+bool UAccelByteEOSVoiceSubsystem::GetGameSessionId(FName SessionName, FString& OutSessionId) const
 {
-	if (!bWasSuccessful)
-	{
-		ACCELBYTE_EOS_VOICE_LOG(Warning, TEXT("Failed to login to EOS voice for LocalUserNum %d: %s"), LocalUserNum, *Error);
-		return;
-	}
-	
-	IOnlineSubsystemEOS* EOSSubsystem = static_cast<IOnlineSubsystemEOS*>(Online::GetSubsystem(GetWorld(), EOS_SUBSYSTEM));
-	check(EOSSubsystem)
+    FNamedOnlineSession* NamedSession = SessionAccelByte->GetNamedSession(SessionName);
+    if (NamedSession == nullptr)
+    {
+        ACCELBYTE_EOS_VOICE_LOG(Warning, TEXT("Session [%s] not found!"), *SessionName.ToString());
+        return false;
+    }
 
-	if (FAccelByteVoiceLocalUser* VoiceUser = FindVoiceLocalUser(LocalUserNum))
-	{
-		VoiceUser->VoiceChatUser = EOSSubsystem->GetVoiceChatUserInterface(UniqueNetId);
-		VoiceUser->VoiceChatUser->SetAudioInputDeviceMuted(false);
-	}
-
-	ACCELBYTE_EOS_VOICE_LOG(Log, TEXT("EOS voice user logged in: %s"), *UniqueNetId.ToDebugString());
+    OutSessionId = NamedSession->GetSessionIdStr();
+    return true;
 }
 
-void UAccelByteEOSVoiceSubsystem::OnGetUserData(const FAccountUserData& AccountUserData, int32 LocalUserNum)
+void UAccelByteEOSVoiceSubsystem::HandleAutoJoinVoiceChat(FName SessionName)
 {
-	if(!AccountUserData.DisplayName.IsEmpty())
-	{
-		LoginToEpic(LocalUserNum);
-		return;
-	}
-	
-	const UAccelByteEOSVoiceConfig* VoiceConfig = GetDefault<UAccelByteEOSVoiceConfig>();
-	if (!VoiceConfig)
-	{
-		ACCELBYTE_EOS_VOICE_LOG(Warning, TEXT("Unable to load UAccelByteEOSVoiceConfig, abort login to Epic."));
-		return;
-	}
+    const UAccelByteEOSVoiceConfig* VoiceConfig = GetDefault<UAccelByteEOSVoiceConfig>();
+    check(VoiceConfig);
 
-	if(!VoiceConfig->bAutoFillEmptyDisplayName)
-	{
-		ACCELBYTE_EOS_VOICE_LOG(Error,
-			TEXT("Display Name is empty and bAutoFillEmptyDisplayName is set to false. Suggestion: \n1. Create a full account, OR \n2. Enable bAutoFillEmptyDisplayName to auto generate DisplayName and UniqueDisplayName"));
-		return;
-	}
+    FString SessionId;
 
-	FAccelByteVoiceLocalUser* VoiceUser = FindVoiceLocalUser(LocalUserNum);
-	if (VoiceUser == nullptr || !VoiceUser->ApiClient.IsValid())
-	{
-		ACCELBYTE_EOS_VOICE_LOG(Error, TEXT("API client unavailable while updating display name for LocalUserNum %d"), LocalUserNum);
-		return;
-	}
-
-	// In EOS Open ID, Display Name must be filled. This will auto generate Display Name with format Player_UID
-	FUserUpdateRequest UpdateRequest;
-	UpdateRequest.DisplayName = FString::Printf(TEXT("Player-%s"), *AccountUserData.UserId.Left(4));
-	UpdateRequest.UniqueDisplayName = FString::Printf(TEXT("%s-%04d"), *AccountUserData.UserId.Left(7), FMath::RandRange(0, 9999));
-	VoiceUser->ApiClient->GetUserApi().Pin()->UpdateUser(
-		UpdateRequest, 
-		THandler<FAccountUserData>::CreateUObject(this, &ThisClass::OnUpdateDisplayNameCompleted, LocalUserNum),
-		FErrorHandler::CreateWeakLambda(this, [LocalUserNum](int32 ErrCode, const FString& ErrMsg)
-	{
-		ACCELBYTE_EOS_VOICE_LOG(Error, TEXT("Unable to update user data for LocalUserNum %d! [%d] %s"), LocalUserNum, ErrCode, *ErrMsg);
-	}));
+    if (GetGameSessionId(SessionName, SessionId))
+    {
+        if (SessionName.IsEqual(NAME_GameSession))
+        {
+            FAccelByteEOSVoiceVoiceGenerateSessionTokenBody Request;
+            Request.HardMuted = false;
+            Request.Puid = EpicPUID;
+            Request.Session = VoiceConfig->bAutoJoinSessionVoice;
+            Request.Team = VoiceConfig->bAutoJoinTeamVoice;
+            if (Request.Session || Request.Team)
+            {
+                EOSVoiceApi->VoiceGenerateSessionToken(SessionId, Request,
+                    AccelByte::THandler<FAccelByteEOSVoiceVoiceSessionTokenResponse>::CreateUObject(this, &UAccelByteEOSVoiceSubsystem::OnSessionVoiceTokenGenerated),
+                    FErrorHandler::CreateUObject(this, &UAccelByteEOSVoiceSubsystem::OnVoiceTokenGenerationFailedForChannel, EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::SESSION));
+            }
+        }
+        else if (SessionName.IsEqual(NAME_PartySession))
+        {
+            if (VoiceConfig->bAutoJoinPartyVoice)
+            {
+                FAccelByteEOSVoiceVoiceGeneratePartyTokenBody Request;
+                Request.HardMuted = false;
+                Request.Puid = EpicPUID;
+                EOSVoiceApi->VoiceGeneratePartyToken(SessionId, Request,
+                    AccelByte::THandler<FAccelByteEOSVoiceVoiceEOSTokenResponse>::CreateUObject(this, &UAccelByteEOSVoiceSubsystem::OnVoiceTokenGenerated),
+                    FErrorHandler::CreateUObject(this, &UAccelByteEOSVoiceSubsystem::OnVoiceTokenGenerationFailedForChannel, EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::PARTY));
+            }
+        }
+    }
 }
 
-void UAccelByteEOSVoiceSubsystem::OnUpdateDisplayNameCompleted(const FAccountUserData& AccountUserData, int32 LocalUserNum)
+void UAccelByteEOSVoiceSubsystem::RequestVoiceToken(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType ChannelType)
 {
-	LoginToEpic(LocalUserNum);
+    FString SessionId;
+    if(ChannelType == EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::PARTY)
+    {
+        GetGameSessionId(NAME_PartySession, SessionId);
+        FAccelByteEOSVoiceVoiceGeneratePartyTokenBody Request;
+        Request.HardMuted = false;
+        Request.Puid = EpicPUID;
+        EOSVoiceApi->VoiceGeneratePartyToken(SessionId, Request,
+            AccelByte::THandler<FAccelByteEOSVoiceVoiceEOSTokenResponse>::CreateUObject(this, &UAccelByteEOSVoiceSubsystem::OnVoiceTokenGenerated),
+            FErrorHandler::CreateUObject(this, &UAccelByteEOSVoiceSubsystem::OnVoiceTokenGenerationFailedForChannel, EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::PARTY));
+    }
+    else
+    {
+        GetGameSessionId(NAME_GameSession, SessionId);
+        FAccelByteEOSVoiceVoiceGenerateSessionTokenBody Request {
+            false, EpicPUID, ChannelType == EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::SESSION, ChannelType == EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::TEAM
+        };
+        EOSVoiceApi->VoiceGenerateSessionToken(SessionId, Request,
+            AccelByte::THandler<FAccelByteEOSVoiceVoiceSessionTokenResponse>::CreateUObject(this, &UAccelByteEOSVoiceSubsystem::OnSessionVoiceTokenGenerated),
+            FErrorHandler::CreateUObject(this, &UAccelByteEOSVoiceSubsystem::OnVoiceTokenGenerationFailedForChannel, EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::SESSION));
+    }
 }
 
-void UAccelByteEOSVoiceSubsystem::OnVoiceTokenReceived(FAccelByteModelsNotificationMessage const& AccelByteModelsNotificationMessage, int32 LocalUserNum)
+void UAccelByteEOSVoiceSubsystem::JoinVoiceChannel(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType ChannelName, const FString& RoomId, const FString& ChannelCredentials, EVoiceChatChannelType ChannelType)
 {
-	if(!AccelByteModelsNotificationMessage.Topic.Equals(EOS_VOICE_TOKEN_TOPIC))
-	{
-		return;
-	}
+    if (VoiceChatUser == nullptr)
+    {
+        ACCELBYTE_EOS_VOICE_LOG(Warning, TEXT("VoiceChatUser is already invalid (?). Abort to join voice channel"));
+        return;
+    }
 
-	if(GetVoiceChatUser(LocalUserNum) == nullptr)
-	{
-		ACCELBYTE_EOS_VOICE_LOG(Error, TEXT("VoiceChatUser is nullptr! Unable to join voice chat for LocalUserNum %d"), LocalUserNum);
-		return;
-	}
-
-	FVoiceChatJoinToken JoinToken;
-	FJsonObjectConverter::JsonObjectStringToUStruct(AccelByteModelsNotificationMessage.Payload, &JoinToken);
-
-	if (!JoinToken.Type.Equals(EOS_VOICE_GAME_SESSION_CHANNEL)
-		&& !JoinToken.Type.Equals(EOS_VOICE_PARTY_SESSION_CHANNEL)
-		&& !JoinToken.Type.Equals(EOS_VOICE_TEAM_SESSION_CHANNEL))
-	{
-		ACCELBYTE_EOS_VOICE_LOG(Error, TEXT("Type: %s is incorrect. Expected to be %s or %s or %s"), *JoinToken.Type, EOS_VOICE_GAME_SESSION_CHANNEL, EOS_VOICE_PARTY_SESSION_CHANNEL, EOS_VOICE_TEAM_SESSION_CHANNEL);
-		return;
-	}
-	
-	FEOSVoiceChatChannelCredentials Credentials;
-	Credentials.ClientBaseUrl = JoinToken.ClientBaseUrl;
-	Credentials.ParticipantToken = JoinToken.Token;
-	JoinChannel(
-		LocalUserNum,
-		JoinToken.Type,
-		Credentials.ToJson(),
-		EVoiceChatChannelType::NonPositional,
-			FOnVoiceChatChannelJoinCompleteDelegate::CreateWeakLambda(this, [](const FString& ChannelName, const FVoiceChatResult& Result)
-			{
-				ACCELBYTE_EOS_VOICE_LOG(Log, TEXT("Joined voice chat channel %s"), *ChannelName);
-			})
-	);
+    // TODO: Voice Join Channel Complete Delegate
+    VoiceChatUser->JoinChannel(ToChannelName(ChannelName), ChannelCredentials, ChannelType, {});
 }
 
-void UAccelByteEOSVoiceSubsystem::OnSessionDestroyed(FName SessionName, bool bWasSuccess)
+
+void UAccelByteEOSVoiceSubsystem::OnAccelByteLoginCompleted(int32 LocalUserNum, bool bWasSuccessful, const FUniqueNetId& UserId, const FString& Error)
 {
-	if(!bWasSuccess)
-	{
-		return;
-	}
+    if (!bWasSuccessful) 
+    {
+        ACCELBYTE_EOS_VOICE_LOG(Log, TEXT("Failed to login to AccelByte, abort login to Epic. LocalUserNum: %d"), LocalUserNum);
+        return;
+    }
 
-	for (const TPair<int32, FAccelByteVoiceLocalUser>& Entry : LocalVoiceUsers)
-	{
-		const int32 LocalUserNum = Entry.Key;
+    AccelByte::FApiClientPtr ApiClient = IdentityAccelByte->GetApiClient(LocalUserNum);
+    check(ApiClient.IsValid());
+    EOSVoiceApi = ApiClient->GetApiPtr<AccelByte::Api::EOSVoice>();
+    check(EOSVoiceApi.IsValid());
 
-		if(SessionName.IsEqual(NAME_GameSession))
-		{
-			LeaveChannel(LocalUserNum, EOS_VOICE_GAME_SESSION_CHANNEL);
-			LeaveChannel(LocalUserNum, EOS_VOICE_TEAM_SESSION_CHANNEL);
-		}
-		else if(SessionName.IsEqual(NAME_PartySession))
-		{
-			LeaveChannel(LocalUserNum, EOS_VOICE_PARTY_SESSION_CHANNEL);
-		}
-	}
+    ApiClient->GetUserApi().Pin()->GetData(AccelByte::THandler<FAccountUserData>::CreateUObject(this, &UAccelByteEOSVoiceSubsystem::OnAccelByteGetUserData, LocalUserNum),
+        FErrorHandler::CreateWeakLambda(this, [LocalUserNum](int32 ErrCode, const FString& ErrMsg)
+            {
+                ACCELBYTE_EOS_VOICE_LOG(Error, TEXT("Unable to gather user data for LocalUserNum %d! [%d] %s"), LocalUserNum, ErrCode, *ErrMsg);
+            })
+    );
+    ApiClient->GetLobbyApi().Pin()->AddMessageNotifDelegate(AccelByte::Api::Lobby::FMessageNotif::CreateUObject(this, &UAccelByteEOSVoiceSubsystem::OnVoiceTokenReceivedFromLobbyNotification));
+
+    LoginToEpic(LocalUserNum);
 }
 
-UAccelByteEOSVoiceSubsystem::FAccelByteVoiceLocalUser* UAccelByteEOSVoiceSubsystem::FindVoiceLocalUser(int32 LocalUserNum)
+void UAccelByteEOSVoiceSubsystem::OnAccelByteGetUserData(const FAccountUserData& Response, int32 LocalUserNum)
 {
-	return LocalVoiceUsers.Find(LocalUserNum);
+    const bool bIsDisplayNameValid = !Response.DisplayName.IsEmpty();
+    if (!Response.DisplayName.IsEmpty())
+    {
+        // Directly login to Epic
+        LoginToEpic(LocalUserNum);
+        return;
+    }
+
+    const UAccelByteEOSVoiceConfig* VoiceConfig = GetDefault<UAccelByteEOSVoiceConfig>();
+    check(VoiceConfig);
+    if (!VoiceConfig->bAutoGenerateDisplayNameIfEmpty)
+    {
+        ACCELBYTE_EOS_VOICE_LOG(Warning, TEXT("bAutoGenerateDisplayNameIfEmpty is set to false. Abort to populate the Display Name! You must handle the DisplayName update manually, after that, you can call the LoginToEpic"));
+        return;
+    }
+
+    // In EOS Open ID, Display Name must be filled. This will auto generate Display Name with format Player_UID
+    AccelByte::FApiClientPtr ApiClient = IdentityAccelByte->GetApiClient(LocalUserNum);
+    check(ApiClient.IsValid());
+
+    FUserUpdateRequest UpdateRequest;
+    UpdateRequest.DisplayName = FString::Printf(TEXT("Player-%s"), *Response.UserId.Left(4));
+    UpdateRequest.UniqueDisplayName = FString::Printf(TEXT("%s-%04d"), *Response.UserId.Left(7), FMath::RandRange(0, 9999));
+    ApiClient->GetUserApi().Pin()->UpdateUser(
+        UpdateRequest,
+        THandler<FAccountUserData>::CreateUObject(this, &UAccelByteEOSVoiceSubsystem::OnAccelByteUpdateDisplayNameCompleted, LocalUserNum),
+        FErrorHandler::CreateWeakLambda(this, [LocalUserNum](int32 ErrCode, const FString& ErrMsg)
+            {
+                ACCELBYTE_EOS_VOICE_LOG(Error, TEXT("Unable to update user data for LocalUserNum %d! [%d] %s"), LocalUserNum, ErrCode, *ErrMsg);
+            })
+    );
 }
 
-const UAccelByteEOSVoiceSubsystem::FAccelByteVoiceLocalUser* UAccelByteEOSVoiceSubsystem::FindVoiceLocalUser(int32 LocalUserNum) const
+void UAccelByteEOSVoiceSubsystem::OnAccelByteUpdateDisplayNameCompleted(const FAccountUserData& Response, int32 LocalUserNum)
 {
-	return LocalVoiceUsers.Find(LocalUserNum);
+    LoginToEpic(LocalUserNum);
 }
+
+void UAccelByteEOSVoiceSubsystem::OnEOSLoginCompleted(int32 LocalUserNum, bool bWasSuccessful, const FUniqueNetId& UserId, const FString& Error) 
+{
+    if (!bWasSuccessful)
+    {
+        ACCELBYTE_EOS_VOICE_LOG(Warning, TEXT("Failed to login to EOS voice for LocalUserNum %d: %s"), LocalUserNum, *Error);
+        return;
+    }
+    
+    FString EOSUserId = UserId.ToString();
+    EOSUserId.Split(TEXT("|"), nullptr, &EpicPUID);
+
+    VoiceChatUser = static_cast<FEOSVoiceChatUser*>(EOSSubsystem->GetVoiceChatUserInterface(UserId));
+    // automatically open the voice input for testing purpose
+    VoiceChatUser->SetAudioInputDeviceMuted(false);
+
+    ACCELBYTE_EOS_VOICE_LOG(Log, TEXT("Successfully logged in to Epic. LocalUserNum %d. UserId: %s. PUID: %s"), LocalUserNum, *EOSUserId, *EpicPUID);
+}
+
+void UAccelByteEOSVoiceSubsystem::UAccelByteEOSVoiceSubsystem::OnAccelByteCreateSessionCompleted(FName SessionName, bool bWasSuccessful) 
+{
+    if (VoiceChatUser == nullptr) 
+    {
+        ACCELBYTE_EOS_VOICE_LOG(Warning, TEXT("VoiceChatUser is invalid (?). Abort to join voice channel"));
+        return;
+    }
+
+    HandleAutoJoinVoiceChat(SessionName);
+}
+
+void UAccelByteEOSVoiceSubsystem::OnAccelByteJoinSessionCompleted(FName SessionName, EOnJoinSessionCompleteResult::Type Result) 
+{
+    if (VoiceChatUser == nullptr)
+    {
+        ACCELBYTE_EOS_VOICE_LOG(Warning, TEXT("VoiceChatUser is invalid (?). Abort to join voice channel"));
+        return;
+    }
+
+    HandleAutoJoinVoiceChat(SessionName);
+}
+
+void UAccelByteEOSVoiceSubsystem::OnAccelByteDestroySessionCompleted(FName SessionName, bool bWasSuccessful) 
+{
+    if (VoiceChatUser == nullptr)
+    {
+        ACCELBYTE_EOS_VOICE_LOG(Warning, TEXT("VoiceChatUser is invalid (?). No need to leave voice chat"));
+        return;
+    }
+
+    if (SessionName.IsEqual(NAME_PartySession) && RoomIdMap.Contains(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::PARTY))
+    {
+        const FString ChannelName = ToChannelName(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::PARTY);
+        RoomIdMap.Remove(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::PARTY);
+        VoiceChatUser->LeaveChannel(ChannelName, {});
+    }
+    else if (SessionName.IsEqual(NAME_GameSession))
+    {
+        if (RoomIdMap.Contains(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::TEAM))
+        {
+            const FString ChannelName = ToChannelName(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::TEAM);
+            RoomIdMap.Remove(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::TEAM);
+            VoiceChatUser->LeaveChannel(ChannelName, {});
+        }
+        if (RoomIdMap.Contains(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::SESSION))
+        {
+            const FString ChannelName = ToChannelName(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::SESSION);
+            RoomIdMap.Remove(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::SESSION);
+            VoiceChatUser->LeaveChannel(ChannelName, {});
+        }
+    }
+}
+
+void UAccelByteEOSVoiceSubsystem::OnServerReceivedSession(FName SessionName)
+{
+    const UAccelByteEOSVoiceConfig* VoiceConfig = GetDefault<UAccelByteEOSVoiceConfig>();
+    check(VoiceConfig);
+
+    FString SessionId;
+
+    if (GetGameSessionId(SessionName, SessionId)) 
+    {
+        FAccelByteEOSVoiceVoiceGenerateAdminSessionTokenBody Request;
+        Request.HardMuted = false;
+        Request.Session = VoiceConfig->bServerAutoGenerateSessionVoiceToken;
+        Request.Team = VoiceConfig->bServerAutoGenerateTeamVoiceToken;
+        Request.AllowPendingUsers = true;
+        Request.Notify = true;
+        if(Request.Session || Request.Team)
+        {
+            ServerEOSVoiceApi->VoiceGenerateAdminSessionToken(SessionId, Request, {}, {});
+        }
+    }
+}
+
+void UAccelByteEOSVoiceSubsystem::OnVoiceTokenReceivedFromLobbyNotification(FAccelByteModelsNotificationMessage const& Message)
+{
+    if(!Message.Topic.Equals(EOS_VOICE_TOPIC))
+    {
+        return;
+    }
+    
+    FAccelByteEOSVoiceVoiceSessionTokenResponse JoinToken;
+    FJsonObjectConverter::JsonObjectStringToUStruct(Message.Payload, &JoinToken);
+
+    OnSessionVoiceTokenGenerated(JoinToken);
+}
+
+void UAccelByteEOSVoiceSubsystem::OnSessionVoiceTokenGenerated(const FAccelByteEOSVoiceVoiceSessionTokenResponse& Response)
+{
+    for(const FAccelByteEOSVoiceVoiceEOSTokenResponse& VoiceToken : Response.Tokens)
+    {
+        OnVoiceTokenGenerated(VoiceToken);
+    }
+}
+
+void UAccelByteEOSVoiceSubsystem::OnVoiceTokenGenerated(const FAccelByteEOSVoiceVoiceEOSTokenResponse& Response)
+{
+    FEOSVoiceChatChannelCredentials Credentials;
+    Credentials.ClientBaseUrl = Response.ClientBaseUrl;
+    Credentials.ParticipantToken = Response.Token;
+    
+    const FTCHARToUTF8 Utf8RoomName(*ToChannelName(Response.ChannelType));
+    const FTCHARToUTF8 ProductIdUtf8(*EpicPUID);
+
+    EOS_RTC_AddNotifyDisconnectedOptions DisconnectedOptions = {};
+    DisconnectedOptions.ApiVersion = EOS_RTC_ADDNOTIFYDISCONNECTED_API_LATEST;
+    DisconnectedOptions.RoomName = Utf8RoomName.Get();
+    DisconnectedOptions.LocalUserId = EOS_ProductUserId_FromString(ProductIdUtf8.Get());
+
+    if (Response.ChannelType == EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::PARTY)
+    {
+        RoomIdMap.Emplace(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::PARTY, Response.RoomId);
+
+        if (EOSPartyVoiceDisconnectNotify.Id == 0)
+        {
+            // Register disconnect event
+            EOSPartyVoiceDisconnectNotify.Id = EOS_RTC_AddNotifyDisconnected(EOSRtcHandle, &DisconnectedOptions, &EOSPartyVoiceDisconnectNotify, &UAccelByteEOSVoiceSubsystem::FEOSPartyVoiceDisconnectNotify::Trampoline);
+            if (EOSPartyVoiceDisconnectNotify.Id == EOS_INVALID_NOTIFICATIONID)
+            {
+                ACCELBYTE_EOS_VOICE_LOG(Warning, TEXT("BindChannelCallbacks EOS_RTC_AddNotifyDisconnected failed Room Name: %s"), *ToChannelName(Response.ChannelType));
+            }
+        }
+    }
+    else if (Response.ChannelType == EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::TEAM)
+    {
+        RoomIdMap.Emplace(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::TEAM, Response.RoomId);
+
+        if (EOSTeamVoiceDisconnectNotify.Id == 0)
+        {
+            // Register disconnect event
+            EOSTeamVoiceDisconnectNotify.Id = EOS_RTC_AddNotifyDisconnected(EOSRtcHandle, &DisconnectedOptions, &EOSTeamVoiceDisconnectNotify, &UAccelByteEOSVoiceSubsystem::FEOSTeamVoiceDisconnectNotify::Trampoline);
+            if (EOSTeamVoiceDisconnectNotify.Id == EOS_INVALID_NOTIFICATIONID)
+            {
+                ACCELBYTE_EOS_VOICE_LOG(Warning, TEXT("BindChannelCallbacks EOS_RTC_AddNotifyDisconnected failed Room Name: %s"), *ToChannelName(Response.ChannelType));
+            }
+        }
+    }
+    else if (Response.ChannelType == EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::SESSION)
+    {
+        RoomIdMap.Emplace(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::SESSION, Response.RoomId);
+
+        if (EOSSessionVoiceDisconnectNotify.Id == 0)
+        {
+            // Register disconnect event
+            EOSSessionVoiceDisconnectNotify.Id = EOS_RTC_AddNotifyDisconnected(EOSRtcHandle, &DisconnectedOptions, &EOSSessionVoiceDisconnectNotify, &UAccelByteEOSVoiceSubsystem::FEOSSessionVoiceDisconnectNotify::Trampoline);
+            if (EOSSessionVoiceDisconnectNotify.Id == EOS_INVALID_NOTIFICATIONID)
+            {
+                ACCELBYTE_EOS_VOICE_LOG(Warning, TEXT("BindChannelCallbacks EOS_RTC_AddNotifyDisconnected failed Room Name: %s"), *ToChannelName(Response.ChannelType));
+            }
+        }
+    }
+
+    JoinVoiceChannel(Response.ChannelType, Response.RoomId, Credentials.ToJson(), EVoiceChatChannelType::NonPositional);
+}
+
+void UAccelByteEOSVoiceSubsystem::OnVoiceTokenGenerationFailedForChannel(int32 ErrCode, const FString& ErrMsg, EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType ChannelType)
+{
+    ACCELBYTE_EOS_VOICE_LOG(Error, TEXT("Failed to generate voice token for channel type %d. [%d] %s"),
+        static_cast<int32>(ChannelType), ErrCode, *ErrMsg);
+}
+
+#undef EOS_VOICE_TOPIC

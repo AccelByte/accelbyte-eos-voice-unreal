@@ -40,6 +40,10 @@
 		{
 			"Name": "EOSVoiceChat",
 			"Enabled": true
+		},
+		{
+			"Name": "AccelByteUe4SdkCustomization",
+			"Enabled": true
 		}
 	]
 }
