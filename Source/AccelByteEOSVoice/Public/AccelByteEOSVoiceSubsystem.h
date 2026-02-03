@@ -47,16 +47,16 @@ public:
     void SetPlayerMuted(const FString& PlayerName, bool bIsMuted);
     void SetAudioInputDeviceMuted(bool bIsMuted);
     void SetAudioOutputDeviceMuted(bool bIsMuted);
-    void TransmitToSpecificChannel(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType ChannelType);
+    void TransmitToSpecificChannel(EAccelByteEOSVoiceVoiceChannelType ChannelType);
 
     IVoiceChatUser* GetVoiceChatUser() const { return VoiceChatUser; }
-	static FString ToChannelName(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType ChannelName);
+	static FString ToChannelName(EAccelByteEOSVoiceVoiceChannelType ChannelName);
 
 protected:
     bool GetGameSessionId(FName SessionName, FString& OutSessionId) const;
     void HandleAutoJoinVoiceChat(FName SessionName);
-    void RequestVoiceToken(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType ChannelType);
-    void JoinVoiceChannel(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType ChannelName, const FString& RoomId, const FString& ChannelCredentials, EVoiceChatChannelType ChannelType);
+    void RequestVoiceToken(EAccelByteEOSVoiceVoiceChannelType ChannelType);
+    void JoinVoiceChannel(EAccelByteEOSVoiceVoiceChannelType ChannelName, const FString& RoomId, const FString& ChannelCredentials, EVoiceChatChannelType ChannelType);
 
     DEFINE_EOS_NOTIFY_STRUCT(EOSPartyVoiceDisconnectNotify, EOS_RTC_DisconnectedCallbackInfo, HandlePartyVoiceDisconnection);
     DEFINE_EOS_NOTIFY_STRUCT(EOSTeamVoiceDisconnectNotify, EOS_RTC_DisconnectedCallbackInfo, HandleTeamVoiceDisconnection);
@@ -75,9 +75,9 @@ private:
 
 	void OnSessionVoiceTokenGenerated(const FAccelByteEOSVoiceVoiceSessionTokenResponse& Response);
     void OnVoiceTokenGenerated(const FAccelByteEOSVoiceVoiceEOSTokenResponse& Response);
-    void OnVoiceTokenGenerationFailedForChannel(int32 ErrCode, const FString& ErrMsg, EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType ChannelType);
+    void OnVoiceTokenGenerationFailedForChannel(int32 ErrCode, const FString& ErrMsg, EAccelByteEOSVoiceVoiceChannelType ChannelType);
 
-    TMap<EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType, FString> RoomIdMap{};
+    TMap<EAccelByteEOSVoiceVoiceChannelType, FString> RoomIdMap{};
 
     FOnlineIdentityAccelBytePtr IdentityAccelByte;
     FOnlineSessionV2AccelBytePtr SessionAccelByte;

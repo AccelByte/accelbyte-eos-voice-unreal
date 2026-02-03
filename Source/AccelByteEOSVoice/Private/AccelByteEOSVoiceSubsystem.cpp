@@ -86,7 +86,7 @@ void UAccelByteEOSVoiceSubsystem::SetAudioOutputDeviceMuted(bool bIsMuted)
     VoiceChatUser->SetAudioOutputDeviceMuted(bIsMuted);
 }
 
-void UAccelByteEOSVoiceSubsystem::TransmitToSpecificChannel(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType ChannelType)
+void UAccelByteEOSVoiceSubsystem::TransmitToSpecificChannel(EAccelByteEOSVoiceVoiceChannelType ChannelType)
 {
     FString ChannelName = ToChannelName(ChannelType);
     if (ChannelName.IsEmpty())
@@ -112,7 +112,7 @@ void UAccelByteEOSVoiceSubsystem::HandlePartyVoiceDisconnection(const EOS_RTC_Di
     }
 
     FString RoomName = StringCast<TCHAR>(Data.RoomName).Get();
-    FString ExpectedRoomName = ToChannelName(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::PARTY);
+    FString ExpectedRoomName = ToChannelName(EAccelByteEOSVoiceVoiceChannelType::PARTY);
     if (RoomName.Equals(ExpectedRoomName))
     {
         ACCELBYTE_EOS_VOICE_LOG(Error, TEXT("Failed to reconnect! RoomName check failed! %s != %s"), *RoomName, *ExpectedRoomName);
@@ -120,7 +120,7 @@ void UAccelByteEOSVoiceSubsystem::HandlePartyVoiceDisconnection(const EOS_RTC_Di
     }
 
     // TODO: Add proper retry, this only one shot retry.
-    RequestVoiceToken(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::PARTY);
+    RequestVoiceToken(EAccelByteEOSVoiceVoiceChannelType::PARTY);
 }
 
 void UAccelByteEOSVoiceSubsystem::HandleTeamVoiceDisconnection(const EOS_RTC_DisconnectedCallbackInfo& Data)
@@ -136,13 +136,13 @@ void UAccelByteEOSVoiceSubsystem::HandleTeamVoiceDisconnection(const EOS_RTC_Dis
     }
 
     FString RoomName = StringCast<TCHAR>(Data.RoomName).Get();
-    FString ExpectedRoomName = ToChannelName(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::TEAM);
+    FString ExpectedRoomName = ToChannelName(EAccelByteEOSVoiceVoiceChannelType::TEAM);
     if (RoomName.Equals(ExpectedRoomName))
     {
         ACCELBYTE_EOS_VOICE_LOG(Error, TEXT("Failed to reconnect! RoomName check failed! %s != %s"), *RoomName, *ExpectedRoomName);
         return;
     }
-    RequestVoiceToken(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::TEAM);
+    RequestVoiceToken(EAccelByteEOSVoiceVoiceChannelType::TEAM);
 }
 
 void UAccelByteEOSVoiceSubsystem::HandleSessionVoiceDisconnection(const EOS_RTC_DisconnectedCallbackInfo& Data)
@@ -158,13 +158,13 @@ void UAccelByteEOSVoiceSubsystem::HandleSessionVoiceDisconnection(const EOS_RTC_
     }
 
     FString RoomName = StringCast<TCHAR>(Data.RoomName).Get();
-    FString ExpectedRoomName = ToChannelName(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::SESSION);
+    FString ExpectedRoomName = ToChannelName(EAccelByteEOSVoiceVoiceChannelType::SESSION);
     if (RoomName.Equals(ExpectedRoomName))
     {
         ACCELBYTE_EOS_VOICE_LOG(Error, TEXT("Failed to reconnect! RoomName check failed! %s != %s"), *RoomName, *ExpectedRoomName);
         return;
     }
-    RequestVoiceToken(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::SESSION);
+    RequestVoiceToken(EAccelByteEOSVoiceVoiceChannelType::SESSION);
 }
 
 void UAccelByteEOSVoiceSubsystem::LoginToEpic(int32 LocalUserNum)
@@ -178,15 +178,15 @@ void UAccelByteEOSVoiceSubsystem::LoginToEpic(int32 LocalUserNum)
     IdentityEOS->Login(LocalUserNum, EpicCreds);
 }
 
-FString UAccelByteEOSVoiceSubsystem::ToChannelName(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType ChannelName)
+FString UAccelByteEOSVoiceSubsystem::ToChannelName(EAccelByteEOSVoiceVoiceChannelType ChannelName)
 {
     switch(ChannelName)
     {
-    case EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::TEAM:
+    case EAccelByteEOSVoiceVoiceChannelType::TEAM:
         return FString(TEXT("TEAM"));
-    case EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::PARTY:
+    case EAccelByteEOSVoiceVoiceChannelType::PARTY:
         return FString(TEXT("PARTY"));
-    case EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::SESSION:
+    case EAccelByteEOSVoiceVoiceChannelType::SESSION:
         return FString(TEXT("SESSION"));
     default:
         return FString(TEXT("INVALID"));
@@ -226,7 +226,7 @@ void UAccelByteEOSVoiceSubsystem::HandleAutoJoinVoiceChat(FName SessionName)
             {
                 EOSVoiceApi->VoiceGenerateSessionToken(SessionId, Request,
                     AccelByte::THandler<FAccelByteEOSVoiceVoiceSessionTokenResponse>::CreateUObject(this, &UAccelByteEOSVoiceSubsystem::OnSessionVoiceTokenGenerated),
-                    FErrorHandler::CreateUObject(this, &UAccelByteEOSVoiceSubsystem::OnVoiceTokenGenerationFailedForChannel, EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::SESSION));
+                    FErrorHandler::CreateUObject(this, &UAccelByteEOSVoiceSubsystem::OnVoiceTokenGenerationFailedForChannel, EAccelByteEOSVoiceVoiceChannelType::SESSION));
             }
         }
         else if (SessionName.IsEqual(NAME_PartySession))
@@ -238,16 +238,16 @@ void UAccelByteEOSVoiceSubsystem::HandleAutoJoinVoiceChat(FName SessionName)
                 Request.Puid = EpicPUID;
                 EOSVoiceApi->VoiceGeneratePartyToken(SessionId, Request,
                     AccelByte::THandler<FAccelByteEOSVoiceVoiceEOSTokenResponse>::CreateUObject(this, &UAccelByteEOSVoiceSubsystem::OnVoiceTokenGenerated),
-                    FErrorHandler::CreateUObject(this, &UAccelByteEOSVoiceSubsystem::OnVoiceTokenGenerationFailedForChannel, EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::PARTY));
+                    FErrorHandler::CreateUObject(this, &UAccelByteEOSVoiceSubsystem::OnVoiceTokenGenerationFailedForChannel, EAccelByteEOSVoiceVoiceChannelType::PARTY));
             }
         }
     }
 }
 
-void UAccelByteEOSVoiceSubsystem::RequestVoiceToken(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType ChannelType)
+void UAccelByteEOSVoiceSubsystem::RequestVoiceToken(EAccelByteEOSVoiceVoiceChannelType ChannelType)
 {
     FString SessionId;
-    if(ChannelType == EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::PARTY)
+    if(ChannelType == EAccelByteEOSVoiceVoiceChannelType::PARTY)
     {
         GetGameSessionId(NAME_PartySession, SessionId);
         FAccelByteEOSVoiceVoiceGeneratePartyTokenBody Request;
@@ -255,21 +255,21 @@ void UAccelByteEOSVoiceSubsystem::RequestVoiceToken(EAccelByteEOSVoiceVoiceEOSTo
         Request.Puid = EpicPUID;
         EOSVoiceApi->VoiceGeneratePartyToken(SessionId, Request,
             AccelByte::THandler<FAccelByteEOSVoiceVoiceEOSTokenResponse>::CreateUObject(this, &UAccelByteEOSVoiceSubsystem::OnVoiceTokenGenerated),
-            FErrorHandler::CreateUObject(this, &UAccelByteEOSVoiceSubsystem::OnVoiceTokenGenerationFailedForChannel, EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::PARTY));
+            FErrorHandler::CreateUObject(this, &UAccelByteEOSVoiceSubsystem::OnVoiceTokenGenerationFailedForChannel, EAccelByteEOSVoiceVoiceChannelType::PARTY));
     }
     else
     {
         GetGameSessionId(NAME_GameSession, SessionId);
         FAccelByteEOSVoiceVoiceGenerateSessionTokenBody Request {
-            false, EpicPUID, ChannelType == EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::SESSION, ChannelType == EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::TEAM
+            false, EpicPUID, ChannelType == EAccelByteEOSVoiceVoiceChannelType::SESSION, ChannelType == EAccelByteEOSVoiceVoiceChannelType::TEAM
         };
         EOSVoiceApi->VoiceGenerateSessionToken(SessionId, Request,
             AccelByte::THandler<FAccelByteEOSVoiceVoiceSessionTokenResponse>::CreateUObject(this, &UAccelByteEOSVoiceSubsystem::OnSessionVoiceTokenGenerated),
-            FErrorHandler::CreateUObject(this, &UAccelByteEOSVoiceSubsystem::OnVoiceTokenGenerationFailedForChannel, EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::SESSION));
+            FErrorHandler::CreateUObject(this, &UAccelByteEOSVoiceSubsystem::OnVoiceTokenGenerationFailedForChannel, EAccelByteEOSVoiceVoiceChannelType::SESSION));
     }
 }
 
-void UAccelByteEOSVoiceSubsystem::JoinVoiceChannel(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType ChannelName, const FString& RoomId, const FString& ChannelCredentials, EVoiceChatChannelType ChannelType)
+void UAccelByteEOSVoiceSubsystem::JoinVoiceChannel(EAccelByteEOSVoiceVoiceChannelType ChannelName, const FString& RoomId, const FString& ChannelCredentials, EVoiceChatChannelType ChannelType)
 {
     if (VoiceChatUser == nullptr)
     {
@@ -394,24 +394,24 @@ void UAccelByteEOSVoiceSubsystem::OnAccelByteDestroySessionCompleted(FName Sessi
         return;
     }
 
-    if (SessionName.IsEqual(NAME_PartySession) && RoomIdMap.Contains(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::PARTY))
+    if (SessionName.IsEqual(NAME_PartySession) && RoomIdMap.Contains(EAccelByteEOSVoiceVoiceChannelType::PARTY))
     {
-        const FString ChannelName = ToChannelName(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::PARTY);
-        RoomIdMap.Remove(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::PARTY);
+        const FString ChannelName = ToChannelName(EAccelByteEOSVoiceVoiceChannelType::PARTY);
+        RoomIdMap.Remove(EAccelByteEOSVoiceVoiceChannelType::PARTY);
         VoiceChatUser->LeaveChannel(ChannelName, {});
     }
     else if (SessionName.IsEqual(NAME_GameSession))
     {
-        if (RoomIdMap.Contains(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::TEAM))
+        if (RoomIdMap.Contains(EAccelByteEOSVoiceVoiceChannelType::TEAM))
         {
-            const FString ChannelName = ToChannelName(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::TEAM);
-            RoomIdMap.Remove(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::TEAM);
+            const FString ChannelName = ToChannelName(EAccelByteEOSVoiceVoiceChannelType::TEAM);
+            RoomIdMap.Remove(EAccelByteEOSVoiceVoiceChannelType::TEAM);
             VoiceChatUser->LeaveChannel(ChannelName, {});
         }
-        if (RoomIdMap.Contains(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::SESSION))
+        if (RoomIdMap.Contains(EAccelByteEOSVoiceVoiceChannelType::SESSION))
         {
-            const FString ChannelName = ToChannelName(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::SESSION);
-            RoomIdMap.Remove(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::SESSION);
+            const FString ChannelName = ToChannelName(EAccelByteEOSVoiceVoiceChannelType::SESSION);
+            RoomIdMap.Remove(EAccelByteEOSVoiceVoiceChannelType::SESSION);
             VoiceChatUser->LeaveChannel(ChannelName, {});
         }
     }
@@ -474,9 +474,9 @@ void UAccelByteEOSVoiceSubsystem::OnVoiceTokenGenerated(const FAccelByteEOSVoice
     DisconnectedOptions.RoomName = Utf8RoomName.Get();
     DisconnectedOptions.LocalUserId = EOS_ProductUserId_FromString(ProductIdUtf8.Get());
 
-    if (Response.ChannelType == EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::PARTY)
+    if (Response.ChannelType == EAccelByteEOSVoiceVoiceChannelType::PARTY)
     {
-        RoomIdMap.Emplace(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::PARTY, Response.RoomId);
+        RoomIdMap.Emplace(EAccelByteEOSVoiceVoiceChannelType::PARTY, Response.RoomId);
 
         if (EOSPartyVoiceDisconnectNotify.Id == 0)
         {
@@ -488,9 +488,9 @@ void UAccelByteEOSVoiceSubsystem::OnVoiceTokenGenerated(const FAccelByteEOSVoice
             }
         }
     }
-    else if (Response.ChannelType == EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::TEAM)
+    else if (Response.ChannelType == EAccelByteEOSVoiceVoiceChannelType::TEAM)
     {
-        RoomIdMap.Emplace(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::TEAM, Response.RoomId);
+        RoomIdMap.Emplace(EAccelByteEOSVoiceVoiceChannelType::TEAM, Response.RoomId);
 
         if (EOSTeamVoiceDisconnectNotify.Id == 0)
         {
@@ -502,9 +502,9 @@ void UAccelByteEOSVoiceSubsystem::OnVoiceTokenGenerated(const FAccelByteEOSVoice
             }
         }
     }
-    else if (Response.ChannelType == EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::SESSION)
+    else if (Response.ChannelType == EAccelByteEOSVoiceVoiceChannelType::SESSION)
     {
-        RoomIdMap.Emplace(EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType::SESSION, Response.RoomId);
+        RoomIdMap.Emplace(EAccelByteEOSVoiceVoiceChannelType::SESSION, Response.RoomId);
 
         if (EOSSessionVoiceDisconnectNotify.Id == 0)
         {
@@ -520,7 +520,7 @@ void UAccelByteEOSVoiceSubsystem::OnVoiceTokenGenerated(const FAccelByteEOSVoice
     JoinVoiceChannel(Response.ChannelType, Response.RoomId, Credentials.ToJson(), EVoiceChatChannelType::NonPositional);
 }
 
-void UAccelByteEOSVoiceSubsystem::OnVoiceTokenGenerationFailedForChannel(int32 ErrCode, const FString& ErrMsg, EAccelByteEOSVoiceVoiceEOSTokenResponseChannelType ChannelType)
+void UAccelByteEOSVoiceSubsystem::OnVoiceTokenGenerationFailedForChannel(int32 ErrCode, const FString& ErrMsg, EAccelByteEOSVoiceVoiceChannelType ChannelType)
 {
     ACCELBYTE_EOS_VOICE_LOG(Error, TEXT("Failed to generate voice token for channel type %d. [%d] %s"),
         static_cast<int32>(ChannelType), ErrCode, *ErrMsg);
